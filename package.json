@@ -1,0 +1,28 @@
+{
+  "name": "local-package-manager",
+  "version": "0.1.0",
+  "description": "Safely reclaim and restore Node.js dependency installations",
+  "type": "module",
+  "bin": {
+    "lpm": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli.js",
+    "dev": "tsx src/cli.ts",
+    "test": "tsx --test test/**/*.test.ts",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3"
+  }
+}
