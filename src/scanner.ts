@@ -15,11 +15,13 @@ const LOCKFILES: Array<{ file: string; manager: PackageManager }> = [
 export interface ScanResult {
   candidates: Candidate[];
   warnings: string[];
+  skippedFolders: number;
 }
 
 export async function scan(root: string): Promise<ScanResult> {
   const candidates: Candidate[] = [];
   const warnings: string[] = [];
+  let skippedFolders = 0;
   const rootPath = resolve(root);
 
   async function walk(directory: string): Promise<void> {
@@ -28,6 +30,7 @@ export async function scan(root: string): Promise<ScanResult> {
       entries = await readdir(directory, { withFileTypes: true });
     } catch (error) {
       warnings.push(`${directory}: ${message(error)}`);
+      skippedFolders += 1;
       return;
     }
     for (const entry of entries) {
@@ -35,9 +38,11 @@ export async function scan(root: string): Promise<ScanResult> {
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
         if (entry.name === "node_modules") {
-          const bytes = await directorySize(entryPath, warnings);
+          const size = await directorySize(entryPath, warnings);
+          skippedFolders += size.skippedFolders;
+          if (!size.complete) continue;
           const project = await findProject(directory, rootPath);
-          candidates.push({ modulesPath: entryPath, bytes, ...project });
+          candidates.push({ modulesPath: entryPath, bytes: size.bytes, ...project });
           continue; // Avoid listing nested dependency node_modules separately.
         }
         await walk(entryPath);
@@ -47,7 +52,7 @@ export async function scan(root: string): Promise<ScanResult> {
 
   await walk(rootPath);
   candidates.sort((a, b) => b.bytes - a.bytes || a.modulesPath.localeCompare(b.modulesPath));
-  return { candidates, warnings };
+  return { candidates, warnings, skippedFolders };
 }
 
 async function findProject(start: string, scanRoot: string): Promise<Pick<Candidate, "projectPath" | "lockfilePath" | "manager">> {
@@ -77,19 +82,26 @@ export function formatBytes(bytes: number): string {
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[index]}`;
 }
 
-async function directorySize(directory: string, warnings: string[]): Promise<number> {
+async function directorySize(directory: string, warnings: string[]): Promise<{ bytes: number; complete: boolean; skippedFolders: number }> {
   let total = 0;
+  let complete = true;
+  let skippedFolders = 0;
   async function visit(path: string): Promise<void> {
     let info;
     try { info = await lstat(path); } catch (error) { warnings.push(`${path}: ${message(error)}`); return; }
     if (info.isSymbolicLink()) return;
     if (!info.isDirectory()) { total += info.blocks ? info.blocks * 512 : info.size; return; }
     let entries;
-    try { entries = await readdir(path); } catch (error) { warnings.push(`${path}: ${message(error)}`); return; }
+    try { entries = await readdir(path); } catch (error) {
+      warnings.push(`${path}: ${message(error)}`);
+      complete = false;
+      skippedFolders += 1;
+      return;
+    }
     await Promise.all(entries.map((entry) => visit(join(path, entry))));
   }
   await visit(directory);
-  return total;
+  return { bytes: total, complete, skippedFolders };
 }
 
 async function exists(path: string): Promise<boolean> {

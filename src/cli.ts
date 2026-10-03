@@ -1,13 +1,19 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { rm, stat, readFile } from "node:fs/promises";
+import { rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { formatBytes, lockfileHash, scan } from "./scanner.js";
 import { loadRegistry, upsertRecord } from "./state.js";
-import type { Candidate, OffloadRecord, PackageManager } from "./types.js";
+import { formatScanSummary, isRestorable } from "./summary.js";
+import { browseSummary } from "./summary-view.js";
+import { installCommand } from "./install-command.js";
+import { log, error, theme } from "./theme.js";
+import type { Candidate, OffloadRecord } from "./types.js";
+
+const console = { log, error };
 
 const HELP = `LPM — reclaim restoreable Node.js dependencies
 
@@ -33,8 +39,14 @@ async function main(): Promise<void> {
 async function scanCommand(root: string): Promise<void> {
   console.log(`Scanning ${root} …`);
   const result = await scan(root);
+  if (stdin.isTTY && stdout.isTTY && process.env.TERM !== "dumb") {
+    await browseSummary(result.candidates, result.skippedFolders);
+    printWarnings(result.warnings);
+    return;
+  }
   printCandidates(result.candidates);
   printWarnings(result.warnings);
+  console.log(formatScanSummary(result.candidates, result.skippedFolders));
 }
 
 async function offloadCommand(root: string): Promise<void> {
@@ -128,10 +140,6 @@ function printWarnings(warnings: string[]): void {
   if (warnings.length > 20) console.error(`- … ${warnings.length - 20} more`);
 }
 
-function isRestorable(candidate: Candidate): candidate is Candidate & { projectPath: string; lockfilePath: string; manager: PackageManager } {
-  return Boolean(candidate.projectPath && candidate.lockfilePath && candidate.manager);
-}
-
 async function select<T>(items: T[], prompt: string, single = false): Promise<T[]> {
   const answer = await ask(prompt);
   const indices = parseSelection(answer, items.length, single);
@@ -152,15 +160,6 @@ function parseSelection(value: string, length: number, single: boolean): number[
   return [...chosen].sort((a, b) => a - b);
 }
 
-async function installCommand(record: OffloadRecord): Promise<{ executable: string; args: string[] }> {
-  if (record.manager === "npm") return { executable: "npm", args: ["ci"] };
-  if (record.manager === "pnpm") return { executable: "pnpm", args: ["install", "--frozen-lockfile"] };
-  if (record.manager === "bun") return { executable: "bun", args: ["install", "--frozen-lockfile"] };
-  const packageJson = await readFile(`${record.projectPath}/package.json`, "utf8").catch(() => "{}");
-  const yarnVersion = (JSON.parse(packageJson) as { packageManager?: string }).packageManager;
-  return { executable: "yarn", args: ["install", yarnVersion?.startsWith("yarn@1") ? "--frozen-lockfile" : "--immutable"] };
-}
-
 async function run(executable: string, args: string[], cwd: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const child = spawn(executable, args, { cwd, stdio: "inherit" });
@@ -170,7 +169,7 @@ async function run(executable: string, args: string[], cwd: string): Promise<voi
 }
 
 function requireInteractive(): void { if (!stdin.isTTY || !stdout.isTTY) throw new Error("This command requires an interactive terminal."); }
-async function ask(question: string): Promise<string> { const rl = createInterface({ input: stdin, output: stdout }); try { return await rl.question(question); } finally { rl.close(); } }
+async function ask(question: string): Promise<string> { const rl = createInterface({ input: stdin, output: stdout }); try { return await rl.question(theme.heading(question)); } finally { rl.close(); } }
 async function confirm(question: string): Promise<boolean> { return (await ask(question)).trim().toLowerCase() === "y"; }
 async function exists(path: string): Promise<boolean> { try { await stat(path); return true; } catch { return false; } }
 async function hashIfPresent(path: string): Promise<string | null> { try { return await lockfileHash(path); } catch { return null; } }
